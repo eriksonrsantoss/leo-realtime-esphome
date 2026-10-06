@@ -50,9 +50,17 @@ void LeoRealtime::setup() {
   if (flags >= 0)
     fcntl(this->server_fd_, F_SETFL, flags | O_NONBLOCK);
 
-  // Diagnostic stage 3: the configured speaker pointer is present, but we do
-  // not call start(), play(), finish(), stop(), or any other speaker method.
-  ESP_LOGI(TAG, "Diagnostic stage 3: TCP listening on port %u; speaker reference loaded but untouched", this->port_);
+  // Diagnostic stage 4: call start() once during setup, but do not play audio.
+  // This isolates Speaker::start() from TCP client handling and Speaker::play().
+  ESP_LOGI(TAG, "Diagnostic stage 4: TCP listening on port %u; testing speaker start only", this->port_);
+  if (this->speaker_ == nullptr) {
+    ESP_LOGE(TAG, "Speaker reference missing");
+    this->mark_failed();
+    return;
+  }
+  ESP_LOGI(TAG, "Diagnostic stage 4: calling speaker start()");
+  this->speaker_->start();
+  ESP_LOGI(TAG, "Diagnostic stage 4: speaker start() returned");
 #else
   ESP_LOGE(TAG, "This component currently requires ESP32");
   this->mark_failed();
@@ -68,7 +76,7 @@ void LeoRealtime::loop() {
   socklen_t len = sizeof(client_addr);
   int fd = ::accept(this->server_fd_, reinterpret_cast<sockaddr *>(&client_addr), &len);
   if (fd >= 0) {
-    ESP_LOGI(TAG, "Diagnostic TCP client connected; speaker remains untouched");
+    ESP_LOGI(TAG, "Diagnostic TCP client connected; no audio will be played");
     ::close(fd);
   }
 #endif
@@ -99,8 +107,8 @@ void LeoRealtime::close_server_() {
 
 void LeoRealtime::dump_config() {
   ESP_LOGCONFIG(TAG, "Léo Realtime:");
-  ESP_LOGCONFIG(TAG, "  Diagnostic stage 3: TCP enabled");
-  ESP_LOGCONFIG(TAG, "  Speaker reference: %s", this->speaker_ != nullptr ? "loaded (untouched)" : "missing");
+  ESP_LOGCONFIG(TAG, "  Diagnostic stage 4: TCP enabled; speaker start() only");
+  ESP_LOGCONFIG(TAG, "  Speaker reference: %s", this->speaker_ != nullptr ? "loaded" : "missing");
   ESP_LOGCONFIG(TAG, "  TCP port: %u", this->port_);
 }
 
