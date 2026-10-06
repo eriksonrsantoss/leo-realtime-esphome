@@ -1,16 +1,6 @@
 #include "leo_realtime.h"
 
-#include <cerrno>
-#include <cstring>
-
 #include "esphome/core/log.h"
-
-#ifdef USE_ESP32
-#include <fcntl.h>
-#include <lwip/inet.h>
-#include <lwip/sockets.h>
-#include <unistd.h>
-#endif
 
 namespace esphome {
 namespace leo_realtime {
@@ -18,126 +8,32 @@ namespace leo_realtime {
 static const char *const TAG = "leo_realtime";
 
 void LeoRealtime::setup() {
-#ifdef USE_ESP32
-  this->server_fd_ = ::socket(AF_INET, SOCK_STREAM, IPPROTO_IP);
-  if (this->server_fd_ < 0) {
-    ESP_LOGE(TAG, "socket() failed: errno=%d", errno);
-    this->mark_failed();
-    return;
-  }
-
-  int yes = 1;
-  setsockopt(this->server_fd_, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(yes));
-
-  sockaddr_in addr{};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_ANY);
-  addr.sin_port = htons(this->port_);
-
-  if (::bind(this->server_fd_, reinterpret_cast<sockaddr *>(&addr), sizeof(addr)) < 0) {
-    ESP_LOGE(TAG, "bind() failed on port %u: errno=%d", this->port_, errno);
-    this->close_server_();
-    this->mark_failed();
-    return;
-  }
-
-  if (::listen(this->server_fd_, 1) < 0) {
-    ESP_LOGE(TAG, "listen() failed: errno=%d", errno);
-    this->close_server_();
-    this->mark_failed();
-    return;
-  }
-
-  int flags = fcntl(this->server_fd_, F_GETFL, 0);
-  fcntl(this->server_fd_, F_SETFL, flags | O_NONBLOCK);
-  ESP_LOGI(TAG, "Listening for raw PCM on TCP port %u", this->port_);
-#else
-  ESP_LOGE(TAG, "This component currently requires ESP32");
-  this->mark_failed();
-#endif
+  // Diagnostic build: intentionally do not open the TCP socket yet.
+  // This isolates boot stability from the networking/audio path.
+  ESP_LOGI(TAG, "Diagnostic build loaded; TCP listener disabled");
 }
 
 void LeoRealtime::loop() {
-#ifdef USE_ESP32
-  if (this->server_fd_ < 0 || this->speaker_ == nullptr)
-    return;
-
-  if (this->client_fd_ < 0) {
-    sockaddr_in client_addr{};
-    socklen_t len = sizeof(client_addr);
-    int fd = ::accept(this->server_fd_, reinterpret_cast<sockaddr *>(&client_addr), &len);
-    if (fd >= 0) {
-      int flags = fcntl(fd, F_GETFL, 0);
-      fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-      this->client_fd_ = fd;
-      this->pending_.clear();
-      this->pending_offset_ = 0;
-      this->speaker_->start();
-      ESP_LOGI(TAG, "PCM client connected");
-    }
-    return;
-  }
-
-  this->flush_pending_();
-  if (!this->pending_.empty())
-    return;
-
-  uint8_t buffer[2048];
-  int received = ::recv(this->client_fd_, buffer, sizeof(buffer), 0);
-  if (received > 0) {
-    this->pending_.assign(buffer, buffer + received);
-    this->pending_offset_ = 0;
-    this->flush_pending_();
-  } else if (received == 0) {
-    ESP_LOGI(TAG, "PCM client disconnected");
-    this->close_client_();
-    this->speaker_->finish();
-  } else if (errno != EAGAIN && errno != EWOULDBLOCK) {
-    ESP_LOGW(TAG, "recv() failed: errno=%d", errno);
-    this->close_client_();
-    this->speaker_->finish();
-  }
-#endif
+  // Intentionally empty in the diagnostic build.
 }
 
 void LeoRealtime::flush_pending_() {
-  if (this->pending_.empty() || this->speaker_ == nullptr)
-    return;
-
-  const size_t remaining = this->pending_.size() - this->pending_offset_;
-  const size_t written = this->speaker_->play(this->pending_.data() + this->pending_offset_, remaining);
-  this->pending_offset_ += written;
-
-  if (this->pending_offset_ >= this->pending_.size()) {
-    this->pending_.clear();
-    this->pending_offset_ = 0;
-  }
 }
 
 void LeoRealtime::close_client_() {
-#ifdef USE_ESP32
-  if (this->client_fd_ >= 0) {
-    ::close(this->client_fd_);
-    this->client_fd_ = -1;
-  }
-#endif
   this->pending_.clear();
   this->pending_offset_ = 0;
+  this->client_fd_ = -1;
 }
 
 void LeoRealtime::close_server_() {
-#ifdef USE_ESP32
-  if (this->server_fd_ >= 0) {
-    ::close(this->server_fd_);
-    this->server_fd_ = -1;
-  }
-#endif
+  this->server_fd_ = -1;
 }
 
 void LeoRealtime::dump_config() {
   ESP_LOGCONFIG(TAG, "Léo Realtime:");
-  ESP_LOGCONFIG(TAG, "  TCP port: %u", this->port_);
-  ESP_LOGCONFIG(TAG, "  Audio expected: signed 16-bit PCM, 16 kHz, stereo, little-endian");
+  ESP_LOGCONFIG(TAG, "  Diagnostic build: TCP listener disabled");
+  ESP_LOGCONFIG(TAG, "  Configured TCP port: %u", this->port_);
 }
 
 }  // namespace leo_realtime
