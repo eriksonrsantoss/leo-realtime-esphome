@@ -53,6 +53,10 @@ void LeoRealtime::setup() {
   // Diagnostic stage 3: the configured speaker pointer is present, but we do
   // not call start(), play(), finish(), stop(), or any other speaker method.
   ESP_LOGI(TAG, "Diagnostic stage 3: TCP listening on port %u; speaker reference loaded but untouched", this->port_);
+#else
+  ESP_LOGE(TAG, "This component currently requires ESP32");
+  this->mark_failed();
+#endif
 }
 
 void LeoRealtime::loop() {
