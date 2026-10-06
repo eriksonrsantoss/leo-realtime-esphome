@@ -54,7 +54,7 @@ void LeoRealtime::setup() {
   // Speaker::finish() is intentionally NOT used because it caused a crash
   // in the isolated diagnostic. The speaker is started only when a client
   // actually connects.
-  ESP_LOGI(TAG, "Streaming build: TCP listening on port %u; finish() disabled", this->port_);
+  ESP_LOGI(TAG, "Diagnostic stage 7: TCP listening on port %u; streaming helpers compiled but inactive", this->port_);
 #else
   ESP_LOGE(TAG, "This component currently requires ESP32");
   this->mark_failed();
@@ -66,45 +66,14 @@ void LeoRealtime::loop() {
   if (this->server_fd_ < 0)
     return;
 
-  if (this->client_fd_ < 0) {
-    sockaddr_in client_addr{};
-    socklen_t len = sizeof(client_addr);
-    int fd = ::accept(this->server_fd_, reinterpret_cast<sockaddr *>(&client_addr), &len);
-    if (fd >= 0) {
-      int flags = fcntl(fd, F_GETFL, 0);
-      if (flags >= 0)
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-      this->client_fd_ = fd;
-      this->pending_.clear();
-      this->pending_offset_ = 0;
-      ESP_LOGI(TAG, "PCM client connected; starting speaker");
-      this->speaker_->start();
-    }
-    return;
-  }
-
-  this->flush_pending_();
-  if (!this->pending_.empty())
-    return;
-
-  uint8_t buffer[1024];
-  const int received = ::recv(this->client_fd_, buffer, sizeof(buffer), 0);
-  if (received > 0) {
-    this->pending_.assign(buffer, buffer + received);
-    this->pending_offset_ = 0;
-    this->flush_pending_();
-    return;
-  }
-
-  if (received == 0) {
-    ESP_LOGI(TAG, "PCM client disconnected; closing socket without speaker finish()");
-    this->close_client_();
-    return;
-  }
-
-  if (errno != EAGAIN && errno != EWOULDBLOCK) {
-    ESP_LOGW(TAG, "recv() failed: errno=%d; closing client without speaker finish()", errno);
-    this->close_client_();
+  // Diagnostic stage 7: keep the exact stable TCP accept/close path.
+  // The streaming helpers remain compiled, but are not executed yet.
+  sockaddr_in client_addr{};
+  socklen_t len = sizeof(client_addr);
+  int fd = ::accept(this->server_fd_, reinterpret_cast<sockaddr *>(&client_addr), &len);
+  if (fd >= 0) {
+    ESP_LOGI(TAG, "Diagnostic stage 7: TCP client accepted and closed; streaming path not executed");
+    ::close(fd);
   }
 #endif
 }
@@ -145,7 +114,7 @@ void LeoRealtime::close_server_() {
 
 void LeoRealtime::dump_config() {
   ESP_LOGCONFIG(TAG, "Léo Realtime:");
-  ESP_LOGCONFIG(TAG, "  Streaming TCP enabled; speaker finish() disabled");
+  ESP_LOGCONFIG(TAG, "  Diagnostic stage 7: stable TCP loop; streaming helpers inactive");
   ESP_LOGCONFIG(TAG, "  Speaker reference: %s", this->speaker_ != nullptr ? "loaded" : "missing");
   ESP_LOGCONFIG(TAG, "  TCP port: %u", this->port_);
 }
