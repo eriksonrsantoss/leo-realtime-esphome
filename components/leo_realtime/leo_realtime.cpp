@@ -50,17 +50,21 @@ void LeoRealtime::setup() {
   if (flags >= 0)
     fcntl(this->server_fd_, F_SETFL, flags | O_NONBLOCK);
 
-  // Diagnostic stage 4: call start() once during setup, but do not play audio.
-  // This isolates Speaker::start() from TCP client handling and Speaker::play().
-  ESP_LOGI(TAG, "Diagnostic stage 4: TCP listening on port %u; testing speaker start only", this->port_);
+  // Diagnostic stage 5: start the speaker and submit a tiny silent PCM block.
+  // No audible content is intended; this isolates Speaker::play().
+  ESP_LOGI(TAG, "Diagnostic stage 5: TCP listening on port %u; testing speaker play with silence", this->port_);
   if (this->speaker_ == nullptr) {
     ESP_LOGE(TAG, "Speaker reference missing");
     this->mark_failed();
     return;
   }
-  ESP_LOGI(TAG, "Diagnostic stage 4: calling speaker start()");
+  ESP_LOGI(TAG, "Diagnostic stage 5: calling speaker start()");
   this->speaker_->start();
-  ESP_LOGI(TAG, "Diagnostic stage 4: speaker start() returned");
+  ESP_LOGI(TAG, "Diagnostic stage 5: speaker start() returned");
+  static const uint8_t silence[256] = {0};
+  ESP_LOGI(TAG, "Diagnostic stage 5: calling speaker play() with 256 silent bytes");
+  const size_t accepted = this->speaker_->play(silence, sizeof(silence));
+  ESP_LOGI(TAG, "Diagnostic stage 5: speaker play() returned %u bytes", (unsigned) accepted);
 #else
   ESP_LOGE(TAG, "This component currently requires ESP32");
   this->mark_failed();
@@ -107,7 +111,7 @@ void LeoRealtime::close_server_() {
 
 void LeoRealtime::dump_config() {
   ESP_LOGCONFIG(TAG, "Léo Realtime:");
-  ESP_LOGCONFIG(TAG, "  Diagnostic stage 4: TCP enabled; speaker start() only");
+  ESP_LOGCONFIG(TAG, "  Diagnostic stage 5: TCP enabled; speaker start()+small silent play()");
   ESP_LOGCONFIG(TAG, "  Speaker reference: %s", this->speaker_ != nullptr ? "loaded" : "missing");
   ESP_LOGCONFIG(TAG, "  TCP port: %u", this->port_);
 }
