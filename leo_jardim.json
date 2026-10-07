@@ -1,0 +1,17 @@
+{
+  "type": "micro",
+  "wake_word": "Leo Jardim",
+  "author": "Erikson Santos",
+  "model": "stream_state_internal_quant.tflite",
+  "trained_languages": [
+    "pt"
+  ],
+  "version": 2,
+  "micro": {
+    "probability_cutoff": 0.85,
+    "sliding_window_size": 5,
+    "feature_step_size": 10,
+    "tensor_arena_size": 30000,
+    "minimum_esphome_version": "2024.7.0"
+  }
+}
