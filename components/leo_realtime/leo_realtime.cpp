@@ -1,4 +1,5 @@
 #include "leo_realtime.h"
+#include "esphome/components/audio/audio.h"
 
 #include <cerrno>
 #include "esphome/core/log.h"
@@ -59,7 +60,10 @@ void LeoRealtime::loop() {
       if (flags >= 0)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
       this->client_fd_ = fd;
-      ESP_LOGI(TAG, "Stage 9.1: PCM client connected; starting speaker");
+      ESP_LOGI(TAG, "Stage 9.2: PCM client connected; configuring 16-bit/2ch/16000 Hz and starting speaker");
+      this->speaker_->set_audio_stream_info(audio::AudioStreamInfo(16, 2, 16000));
+      this->speaker_->set_mute_state(false);
+      this->speaker_->set_volume(1.0f);
       this->speaker_->start();
     }
     return;
@@ -75,7 +79,7 @@ void LeoRealtime::loop() {
 
   if (received > 0) {
     const size_t accepted = this->speaker_->play(buffer, static_cast<size_t>(received));
-    ESP_LOGD(TAG, "Stage 9.1: recv=%d bytes, play accepted=%u bytes", received, static_cast<unsigned>(accepted));
+    ESP_LOGD(TAG, "Stage 9.2: recv=%d bytes, play accepted=%u bytes", received, static_cast<unsigned>(accepted));
     if (accepted < static_cast<size_t>(received)) {
       this->pending_.assign(buffer + accepted, buffer + received);
       this->pending_offset_ = 0;
@@ -106,7 +110,7 @@ void LeoRealtime::flush_pending_() {
 
   const size_t remaining = this->pending_.size() - this->pending_offset_;
   const size_t accepted = this->speaker_->play(this->pending_.data() + this->pending_offset_, remaining);
-  ESP_LOGD(TAG, "Stage 9.1: pending=%u bytes, play accepted=%u bytes", static_cast<unsigned>(remaining), static_cast<unsigned>(accepted));
+  ESP_LOGD(TAG, "Stage 9.2: pending=%u bytes, play accepted=%u bytes", static_cast<unsigned>(remaining), static_cast<unsigned>(accepted));
   this->pending_offset_ += accepted;
 
   if (this->pending_offset_ >= this->pending_.size()) {
@@ -137,7 +141,7 @@ void LeoRealtime::close_server_() {
 
 void LeoRealtime::dump_config() {
   ESP_LOGCONFIG(TAG, "Léo Realtime:");
-  ESP_LOGCONFIG(TAG, "  Stage 9.1: deferred TCP + raw PCM playback diagnostics");
+  ESP_LOGCONFIG(TAG, "  Stage 9.2: explicit 16-bit/2ch/16000 Hz raw PCM");
   ESP_LOGCONFIG(TAG, "  Expected PCM: signed 16-bit little-endian, 16 kHz, stereo");
   ESP_LOGCONFIG(TAG, "  Speaker reference: %s", this->speaker_ != nullptr ? "loaded" : "missing");
   ESP_LOGCONFIG(TAG, "  TCP port: %u", this->port_);
