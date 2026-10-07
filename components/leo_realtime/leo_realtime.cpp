@@ -18,18 +18,19 @@ namespace leo_realtime {
 static const char *const TAG = "leo_realtime";
 
 void LeoRealtime::setup() {
-  // lwIP sockets are deliberately created later from loop(), after networking is ready.
-  ESP_LOGI(TAG, "Stage 17: coordinated speaker + microphone TCP listeners");
+  ESP_LOGI(TAG, "Stage 21: guarded speaker + microphone TCP handoff");
 
   if (this->microphone_source_ != nullptr) {
     this->microphone_source_->add_data_callback([this](const std::vector<uint8_t> &data) {
+      // Only queue microphone data while a live mic TCP client exists.
+      // During speaker handoff stop() can race one last callback; never mutate
+      // the vector after the mic client has been closed.
       if (this->mic_client_fd_ < 0 || data.empty())
         return;
 
-      // Keep the callback non-blocking. loop() owns socket transmission.
       const size_t queued = this->mic_pending_.size() - this->mic_pending_offset_;
       if (queued + data.size() > MIC_PENDING_LIMIT) {
-        ESP_LOGW(TAG, "Stage 14: microphone queue full; dropping %u bytes",
+        ESP_LOGW(TAG, "Stage 21: microphone queue full; dropping %u bytes",
                  static_cast<unsigned>(data.size()));
         return;
       }
@@ -72,7 +73,7 @@ bool LeoRealtime::open_listener_(int &fd, uint16_t port) {
   if (flags >= 0)
     fcntl(fd, F_SETFL, flags | O_NONBLOCK);
 
-  ESP_LOGI(TAG, "Stage 14: TCP listener active on port %u", port);
+  ESP_LOGI(TAG, "Stage 21: TCP listener active on port %u", port);
   return true;
 #else
   return false;
@@ -102,12 +103,14 @@ void LeoRealtime::service_speaker_() {
       int flags = fcntl(fd, F_GETFL, 0);
       if (flags >= 0)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+      ESP_LOGI(TAG, "Stage 21: speaker client connected; taking I2S ownership");
+
+      // Close the custom microphone session first. This makes the callback
+      // guard false before stop() can deliver a final in-flight callback.
+      this->close_mic_client_();
+
       this->client_fd_ = fd;
-      ESP_LOGI(TAG, "Stage 17: speaker client connected; taking I2S ownership");
-      // The Atom Echo microphone and speaker share the I2S peripheral.
-      // Explicitly stop our microphone source before starting speaker output.
-      if (this->microphone_source_ != nullptr)
-        this->microphone_source_->stop();
       this->speaker_->set_audio_stream_info(audio::AudioStreamInfo(16, 2, 16000));
       this->speaker_->set_mute_state(false);
       this->speaker_->set_volume(1.0f);
@@ -134,13 +137,13 @@ void LeoRealtime::service_speaker_() {
 
   if (received == 0) {
     this->flush_pending_();
-    ESP_LOGI(TAG, "Stage 17: speaker client disconnected; stopping speaker");
+    ESP_LOGI(TAG, "Stage 21: speaker client disconnected; stopping speaker");
     this->close_client_();
     return;
   }
 
   if (errno != EAGAIN && errno != EWOULDBLOCK) {
-    ESP_LOGW(TAG, "Stage 14: speaker socket error errno=%d", errno);
+    ESP_LOGW(TAG, "Stage 21: speaker socket error errno=%d", errno);
     this->close_client_();
   }
 #endif
@@ -151,6 +154,10 @@ void LeoRealtime::service_microphone_() {
   if (this->mic_server_fd_ < 0 || this->microphone_source_ == nullptr)
     return;
 
+  // Never start/serve the custom microphone while speaker owns I2S.
+  if (this->client_fd_ >= 0)
+    return;
+
   if (this->mic_client_fd_ < 0) {
     sockaddr_in client_addr{};
     socklen_t len = sizeof(client_addr);
@@ -159,25 +166,24 @@ void LeoRealtime::service_microphone_() {
       int flags = fcntl(fd, F_GETFL, 0);
       if (flags >= 0)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-      this->mic_client_fd_ = fd;
       this->mic_pending_.clear();
       this->mic_pending_offset_ = 0;
-      ESP_LOGI(TAG, "Stage 14: microphone client connected; starting 16-bit mono capture");
+      this->mic_client_fd_ = fd;
+      ESP_LOGI(TAG, "Stage 21: microphone client connected; starting 16-bit mono capture");
       this->microphone_source_->start();
     }
     return;
   }
 
-  // Detect a client-side close without consuming application data.
   uint8_t probe;
   const int peeked = ::recv(this->mic_client_fd_, &probe, 1, MSG_PEEK);
   if (peeked == 0) {
-    ESP_LOGI(TAG, "Stage 14: microphone client disconnected; stopping capture");
+    ESP_LOGI(TAG, "Stage 21: microphone client disconnected; stopping capture");
     this->close_mic_client_();
     return;
   }
   if (peeked < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-    ESP_LOGW(TAG, "Stage 14: microphone socket error errno=%d", errno);
+    ESP_LOGW(TAG, "Stage 21: microphone socket error errno=%d", errno);
     this->close_mic_client_();
     return;
   }
@@ -196,7 +202,7 @@ void LeoRealtime::service_microphone_() {
       this->mic_pending_offset_ = 0;
     }
   } else if (sent < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-    ESP_LOGW(TAG, "Stage 14: microphone send error errno=%d", errno);
+    ESP_LOGW(TAG, "Stage 21: microphone send error errno=%d", errno);
     this->close_mic_client_();
   }
 #endif
@@ -217,15 +223,13 @@ void LeoRealtime::flush_pending_() {
 }
 
 void LeoRealtime::close_client_() {
-  // Release the physical I2S speaker immediately when the TCP playback
-  // session ends. Closing only the socket leaves the ESPHome speaker task
-  // alive briefly and races the microphone restart on Atom Echo.
   if (this->speaker_ != nullptr) {
     this->speaker_->stop();
-    ESP_LOGI(TAG, "Stage 17: speaker stopped; I2S released");
+    ESP_LOGI(TAG, "Stage 21: speaker stopped; I2S released");
   }
 #ifdef USE_ESP32
   if (this->client_fd_ >= 0) {
+    ::shutdown(this->client_fd_, SHUT_RDWR);
     ::close(this->client_fd_);
     this->client_fd_ = -1;
   }
@@ -244,14 +248,23 @@ void LeoRealtime::close_server_() {
 }
 
 void LeoRealtime::close_mic_client_() {
+#ifdef USE_ESP32
+  // Invalidate the fd before stop(): a final in-flight microphone callback
+  // then sees no client and cannot append to mic_pending_ during cleanup.
+  const int fd = this->mic_client_fd_;
+  this->mic_client_fd_ = -1;
+#endif
+
   if (this->microphone_source_ != nullptr)
     this->microphone_source_->stop();
+
 #ifdef USE_ESP32
-  if (this->mic_client_fd_ >= 0) {
-    ::close(this->mic_client_fd_);
-    this->mic_client_fd_ = -1;
+  if (fd >= 0) {
+    ::shutdown(fd, SHUT_RDWR);
+    ::close(fd);
   }
 #endif
+
   this->mic_pending_.clear();
   this->mic_pending_offset_ = 0;
 }
@@ -267,7 +280,7 @@ void LeoRealtime::close_mic_server_() {
 
 void LeoRealtime::dump_config() {
   ESP_LOGCONFIG(TAG, "Léo Realtime:");
-  ESP_LOGCONFIG(TAG, "  Stage 17: coordinated speaker output + on-demand microphone capture");
+  ESP_LOGCONFIG(TAG, "  Stage 21: guarded speaker/microphone handoff");
   ESP_LOGCONFIG(TAG, "  Speaker PCM: signed 16-bit little-endian, 16 kHz, stereo");
   ESP_LOGCONFIG(TAG, "  Microphone PCM: signed 16-bit little-endian, 16 kHz, mono");
   ESP_LOGCONFIG(TAG, "  Speaker reference: %s", this->speaker_ != nullptr ? "loaded" : "missing");
