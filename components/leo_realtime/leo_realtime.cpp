@@ -59,23 +59,41 @@ void LeoRealtime::loop() {
       if (flags >= 0)
         fcntl(fd, F_SETFL, flags | O_NONBLOCK);
       this->client_fd_ = fd;
-      ESP_LOGI(TAG, "Stage 8: PCM client connected; starting speaker (no audio consumed yet)");
+      ESP_LOGI(TAG, "Stage 9: PCM client connected; starting speaker");
       this->speaker_->start();
     }
     return;
   }
 
-  // Stage 8 deliberately does not recv/play audio yet.
-  // It only proves that a TCP client can coexist with speaker_->start().
-  uint8_t probe;
-  const int received = ::recv(this->client_fd_, &probe, 1, MSG_PEEK);
+  // First flush bytes the speaker could not accept on the previous loop.
+  this->flush_pending_();
+  if (!this->pending_.empty())
+    return;
+
+  uint8_t buffer[1024];
+  const int received = ::recv(this->client_fd_, buffer, sizeof(buffer), 0);
+
+  if (received > 0) {
+    const size_t accepted = this->speaker_->play(buffer, static_cast<size_t>(received));
+    if (accepted < static_cast<size_t>(received)) {
+      this->pending_.assign(buffer + accepted, buffer + received);
+      this->pending_offset_ = 0;
+    }
+    return;
+  }
+
   if (received == 0) {
-    ESP_LOGI(TAG, "Stage 8: client disconnected; closing socket without finish()");
+    // Flush anything already accepted before closing the TCP socket. We deliberately
+    // avoid speaker_->finish() here because an earlier diagnostic build was unstable
+    // around lifecycle transitions. The configured speaker timeout releases it.
+    this->flush_pending_();
+    ESP_LOGI(TAG, "Stage 9: client disconnected; closing TCP socket");
     this->close_client_();
     return;
   }
-  if (received < 0 && errno != EAGAIN && errno != EWOULDBLOCK) {
-    ESP_LOGW(TAG, "Stage 8: socket error errno=%d; closing client", errno);
+
+  if (errno != EAGAIN && errno != EWOULDBLOCK) {
+    ESP_LOGW(TAG, "Stage 9: socket error errno=%d; closing client", errno);
     this->close_client_();
   }
 #endif
@@ -117,7 +135,8 @@ void LeoRealtime::close_server_() {
 
 void LeoRealtime::dump_config() {
   ESP_LOGCONFIG(TAG, "Léo Realtime:");
-  ESP_LOGCONFIG(TAG, "  Stage 8: deferred TCP + speaker start; audio playback inactive");
+  ESP_LOGCONFIG(TAG, "  Stage 9: deferred TCP + raw PCM playback");
+  ESP_LOGCONFIG(TAG, "  Expected PCM: signed 16-bit little-endian, 16 kHz, stereo");
   ESP_LOGCONFIG(TAG, "  Speaker reference: %s", this->speaker_ != nullptr ? "loaded" : "missing");
   ESP_LOGCONFIG(TAG, "  TCP port: %u", this->port_);
 }
